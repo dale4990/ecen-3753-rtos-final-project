@@ -21,7 +21,7 @@
 
 #include "app.h"
 
-#define GRAVITY 2
+#define GRAVITY 0.5
 #define TIMING_EVENT (START_TIME | END_TIME)
 
 
@@ -56,8 +56,8 @@ bool blink = true;
 int game_over = -1;
 
 int foundation_hit_count = 0;
-int lower = 10;
-int upper = 30;
+int lower = 5;
+int upper = 20;
 
 
 double plat_x = 64;
@@ -80,6 +80,7 @@ double rail_y_init_vel = 0;
 double rail_y_vel = 0;
 double rail_y_acc = GRAVITY;
 double rail_energy;
+double impulse;
 
 double tau_physics;
 
@@ -100,6 +101,8 @@ void LcdDisplayTask(void *p_arg)
 {
     RTOS_ERR err;
     (void)&p_arg;
+
+    OSTmrStart(&LCDTimer, &err);
 
     while(1) {
         // Wait for LCD semaphore
@@ -149,20 +152,26 @@ void LcdDisplayTask(void *p_arg)
         if(foundation_hit_count >= game.foundation_hits_required){
 
             GLIB_drawStringOnLine(&glibContext, "You Win!", 6, GLIB_ALIGN_CENTER, 2, 0, true);
+            GPIO_PinOutClear(LED1_port, LED1_pin);
+            GPIO_PinOutSet(LED1_port, LED1_pin);
 
             OSTaskDel(&LedOutputTCB, &err);
             OSTaskDel(&PhysicsEngineTCB, &err);
             OSTaskDel(&SliderTCB, &err);
             //OSTaskDel(&LcdDisplayTCB, &err);
+
         }
 
         else if (game_over == 0){
             GLIB_drawStringOnLine(&glibContext, "Game Over!", 6, GLIB_ALIGN_CENTER, 2, 0, true);
+            GPIO_PinOutClear(LED1_port, LED1_pin);
+            GPIO_PinOutSet(LED1_port, LED1_pin);
 
             OSTaskDel(&LedOutputTCB, &err);
             OSTaskDel(&PhysicsEngineTCB, &err);
             OSTaskDel(&SliderTCB, &err);
             //OSTaskDel(&LcdDisplayTCB, &err);
+
 
         }
 
@@ -183,6 +192,8 @@ void LedOutputTask(void *p_arg)
     OS_TICK end_time = 0;
     OS_FLAGS event_flags;
     uint32_t duty_cycle_led0 = 0;
+
+    OSTmrStart(&EvacTimerOn, &err);
 
     (void)&p_arg;
 
@@ -243,6 +254,8 @@ void LedOutputTask(void *p_arg)
             CMU_ClockFreqGet(cmuClock_LETIMER0) * 0 / (OUT_FREQ * 100));
         }
 
+        GPIO_PinOutToggle(LED1_port, LED1_pin);
+
         OSMutexPost(&Platform_Mutex, OS_OPT_POST_1, &err);
 
 
@@ -257,6 +270,8 @@ void SliderTask(void *p_arg)
 {
   RTOS_ERR err;
   (void)&p_arg;
+
+  OSTmrStart(&SliderTimer, &err);
 
   while(1){
       OSSemPend(&SliderSemaphore,
@@ -281,7 +296,7 @@ void SliderTask(void *p_arg)
       if((slider_position0) && (!slider_position1 && !slider_position2 && !slider_position3)){
             if(slider_direction != 1){
                 slider_direction = 1;
-                platform.force = -200;
+                platform.force = -100;
 
             }
       }
@@ -289,7 +304,7 @@ void SliderTask(void *p_arg)
       else if((slider_position1) && (!slider_position2 && !slider_position3 && !slider_position0)){
             if(slider_direction != 2){
                 slider_direction = 2;
-                platform.force = -100;
+                platform.force = -50;
 
           }
       }
@@ -297,7 +312,7 @@ void SliderTask(void *p_arg)
       else if((slider_position2) && (!slider_position1 && !slider_position3 && !slider_position0)){
             if(slider_direction != 3){
                 slider_direction = 3;
-                platform.force = 100;
+                platform.force = 50;
 
             }
       }
@@ -305,7 +320,7 @@ void SliderTask(void *p_arg)
       else if((slider_position3) && (!slider_position1 && !slider_position2 && !slider_position0)){
             if(slider_direction != 4){
                 slider_direction = 4;
-                platform.force = 200;
+                platform.force = 100;
 
             }
       }
@@ -331,6 +346,8 @@ void SliderTask(void *p_arg)
 void PhysicsEngineTask(void* p_arg) {
     RTOS_ERR err;
     (void) p_arg; // unused parameter
+
+    OSTmrStart(&PhysicsTimer, &err);
 
     while (1) {
 
@@ -371,17 +388,26 @@ void PhysicsEngineTask(void* p_arg) {
         // Calculate x acceleration for platform
         plat_x_acc = (double) platform.force / (double) game.platform.mass_kg;
 
+        tau_physics = (double) game.tau_physics_ms / 1000;
+
+        double max_force = (2*plat_x_vel*game.platform.mass_kg)/tau_physics;
+
         // edge collision detection
         if (plat_x - 8 < 0) {
             plat_x = 9;
+            if (max_force > game.platform.max_force_N){
+                plat_x_vel = game.platform.max_platform_bounce_speed_cm_s/1000;
+            }
+            impulse = 0;
             plat_x_vel *= -1;
-        } else if (plat_x + 8 > 128) {
+
+        }
+        else if (plat_x + 8 > 128) {
             plat_x = 119;
+            impulse = 0;
             plat_x_vel *= -1;
         }
 
-
-        tau_physics = (double) game.tau_physics_ms / 1000;
 
         if (satchel_in_air) {
             // Satchel is in the air, update position and velocity
@@ -410,8 +436,9 @@ void PhysicsEngineTask(void* p_arg) {
 
                 if ((sat_x > plat_x - 8 && sat_x < plat_x + 8) &&
                     (sat_y > (128 - (game.shield.effective_range_cm/1000)) && sat_y < 128) && has_shield) { // satchel collides with shield
-                    sat_y = 109;
-                    sat_y_vel *= -1;
+                    satchel_in_air = false;
+                    sat_x = 20;
+                    sat_y = 0;
                 }
 
                 sat_x += sat_x_vel * tau_physics;
@@ -426,10 +453,6 @@ void PhysicsEngineTask(void* p_arg) {
             sat_y_vel = 0;
             satchel_in_air = true;
         }
-
-        // Calculate x velocity and position for platform
-        plat_x_vel += plat_x_acc * tau_physics;
-        plat_x += plat_x_vel * tau_physics;
 
         double railgun_time = railgun.time;
 
@@ -464,6 +487,7 @@ void PhysicsEngineTask(void* p_arg) {
                 rail_x_vel = cos(game.railgun.elevation_angle_mrad * 0.0572957795) * rail_vel;
                 rail_y_init_vel = -sin(game.railgun.elevation_angle_mrad * 0.0572957795) * rail_vel;
                 rail_y_vel = rail_y_init_vel;  // initialize rail_y_vel with rail_y_init_vel
+
                 shot_in_air = false;
             }
             else{
@@ -474,6 +498,7 @@ void PhysicsEngineTask(void* p_arg) {
                 rail_x_vel = cos(game.railgun.elevation_angle_mrad * 0.0572957795) * rail_vel;
                 rail_y_init_vel = -sin(game.railgun.elevation_angle_mrad * 0.0572957795) * rail_vel;
                 rail_y_vel = rail_y_init_vel;  // initialize rail_y_vel with rail_y_init_vel
+
                 shot_in_air = false;
             }
 
@@ -486,17 +511,24 @@ void PhysicsEngineTask(void* p_arg) {
                 game.generator.energy_storage_kj -= rail_energy;
                 rail_energy = 0;
                 if(shot_still_in_air){
+                    impulse = ((game.railgun.shot_mass_kg * (rail_x_vel * -1))/35);
                     shot_in_air = true;
                 }
                 else{
                     shot_in_air = false;
+                    impulse = 0;
                 }
             }
         }
 
+
         rail_x += rail_x_vel * tau_physics;
         rail_y_vel += (rail_y_acc * tau_physics);  // update rail_y_vel with gravity
         rail_y += rail_y_vel * tau_physics;  // use updated rail_y_vel in position update
+        // Calculate x velocity and position for platform
+        plat_x_vel += (plat_x_acc * tau_physics) + (impulse / game.platform.mass_kg);
+        plat_x += plat_x_vel * tau_physics;
+
 
         if(game.generator.energy_storage_kj < 50000){
             game.generator.energy_storage_kj += 10;
@@ -561,7 +593,7 @@ void Evac_On_TimerCallback(void *p_tmr, void *p_arg){
   (void)&p_tmr;
   (void)&p_arg;
 
-  GPIO_PinOutSet(LED1_port, LED1_pin);
+  GPIO_PinOutToggle(LED1_port, LED1_pin);
 
   OSTmrCreate(&EvacTimerOff,
               "Evacuation Timer Off",
@@ -662,7 +694,7 @@ void init_timers(void){
               DEF_NULL,
               &err);
 
-  OSTmrStart(&EvacTimerOn, &err);
+  //OSTmrStart(&EvacTimerOn, &err);
 
   if(err.Code != RTOS_ERR_NONE){
 
@@ -938,11 +970,12 @@ void app_init(void)
   LCD_init();
 
   initResources();
+  init_timers();
   PhysicsEngineTaskCreate();
   LcdDisplayTaskCreate();
   LedOutputTaskCreate();
   SliderTaskCreate();
   IdleTaskCreate();
 
-  init_timers();
+
 }

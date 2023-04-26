@@ -20,10 +20,10 @@ void InitGameConfig(game_config_t *p_config) {
     p_config->satchel_charges.display_diameter_pixels = 10;
     p_config->satchel_charges.tau_throw_ms = 0;
     p_config->satchel_charges.max_num_in_flight = 1;
-    p_config->platform.max_force_N = 20000000;
+    p_config->platform.max_force_N = 12000;
     p_config->platform.mass_kg = 100;
     p_config->platform.length_cm = 10000;
-    p_config->platform.max_platform_bounce_speed_cm_s = 50000;
+    p_config->platform.max_platform_bounce_speed_cm_s = 10000;
     p_config->shield.effective_range_cm = 15000;
     p_config->shield.activation_energy_kj = 30000;
     p_config->railgun.elevation_angle_mrad = 800;
