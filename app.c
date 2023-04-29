@@ -54,6 +54,7 @@ volatile bool shot_in_air = false;
 volatile bool shot_still_in_air;
 bool blink = true;
 int game_over = -1;
+int evacuation = 0;
 
 int foundation_hit_count = 0;
 int lower = 5;
@@ -78,7 +79,7 @@ double rail_vel = 0;
 double rail_x_vel = 0;
 double rail_y_init_vel = 0;
 double rail_y_vel = 0;
-double rail_y_acc = GRAVITY;
+double rail_y_acc = GRAVITY*4;
 double rail_energy;
 double impulse;
 
@@ -149,20 +150,18 @@ void LcdDisplayTask(void *p_arg)
             draw_railgun_shot(&glibContext, rail_x, rail_y, game.railgun.shot_display_diameter_pixels);
         }
 
-        if(foundation_hit_count >= game.foundation_hits_required){
+        if(evacuation > 8){
 
             GLIB_drawStringOnLine(&glibContext, "You Win!", 6, GLIB_ALIGN_CENTER, 2, 0, true);
-            GPIO_PinOutClear(LED1_port, LED1_pin);
-            GPIO_PinOutSet(LED1_port, LED1_pin);
 
             OSTaskDel(&LedOutputTCB, &err);
             OSTaskDel(&PhysicsEngineTCB, &err);
             OSTaskDel(&SliderTCB, &err);
-            //OSTaskDel(&LcdDisplayTCB, &err);
+
 
         }
 
-        else if (game_over == 0){
+        if (game_over == 0){
             GLIB_drawStringOnLine(&glibContext, "Game Over!", 6, GLIB_ALIGN_CENTER, 2, 0, true);
             GPIO_PinOutClear(LED1_port, LED1_pin);
             GPIO_PinOutSet(LED1_port, LED1_pin);
@@ -170,7 +169,6 @@ void LcdDisplayTask(void *p_arg)
             OSTaskDel(&LedOutputTCB, &err);
             OSTaskDel(&PhysicsEngineTCB, &err);
             OSTaskDel(&SliderTCB, &err);
-            //OSTaskDel(&LcdDisplayTCB, &err);
 
 
         }
@@ -254,8 +252,6 @@ void LedOutputTask(void *p_arg)
             CMU_ClockFreqGet(cmuClock_LETIMER0) * 0 / (OUT_FREQ * 100));
         }
 
-        GPIO_PinOutToggle(LED1_port, LED1_pin);
-
         OSMutexPost(&Platform_Mutex, OS_OPT_POST_1, &err);
 
 
@@ -296,7 +292,7 @@ void SliderTask(void *p_arg)
       if((slider_position0) && (!slider_position1 && !slider_position2 && !slider_position3)){
             if(slider_direction != 1){
                 slider_direction = 1;
-                platform.force = -100;
+                platform.force = -80;
 
             }
       }
@@ -304,7 +300,7 @@ void SliderTask(void *p_arg)
       else if((slider_position1) && (!slider_position2 && !slider_position3 && !slider_position0)){
             if(slider_direction != 2){
                 slider_direction = 2;
-                platform.force = -50;
+                platform.force = -40;
 
           }
       }
@@ -312,7 +308,7 @@ void SliderTask(void *p_arg)
       else if((slider_position2) && (!slider_position1 && !slider_position3 && !slider_position0)){
             if(slider_direction != 3){
                 slider_direction = 3;
-                platform.force = 50;
+                platform.force = 40;
 
             }
       }
@@ -320,7 +316,7 @@ void SliderTask(void *p_arg)
       else if((slider_position3) && (!slider_position1 && !slider_position2 && !slider_position0)){
             if(slider_direction != 4){
                 slider_direction = 4;
-                platform.force = 100;
+                platform.force = 80;
 
             }
       }
@@ -371,19 +367,20 @@ void PhysicsEngineTask(void* p_arg) {
 
         OSTmrStart(&EvacTimerOn, &err);
 
-
-
         int has_shield = shield.on;
 
         if(shield.on == -1){
             if(game.generator.energy_storage_kj < game.shield.activation_energy_kj){
                 shield.on = 0;
+                has_shield = shield.on;
             }
             else{
                 game.generator.energy_storage_kj -= game.shield.activation_energy_kj;
                 shield.on = 1;
+                has_shield = shield.on;
             }
         }
+
 
         // Calculate x acceleration for platform
         plat_x_acc = (double) platform.force / (double) game.platform.mass_kg;
@@ -469,9 +466,27 @@ void PhysicsEngineTask(void* p_arg) {
 
 
         }
+        if(((rail_x > 0 && rail_x < 20) &&
+            (rail_y > 0 && rail_y < 2) && shot_still_in_air)) // shot hits the foundation
+        {
+            shot_still_in_air = false;
+            rail_x = 130;
+            rail_y = 130;
+            rail_x_vel = 0;
+            rail_y_vel = 0;
+
+            foundation_hit_count++;
+
+
+        }
 
         else if (rail_x < 0 || rail_x > 128 || rail_y > 128){ // shot is out of bounds
             shot_still_in_air = false;
+        }
+        else if((rail_x > plat_x - 8 && rail_x < plat_x + 8) &&
+            (rail_y > 126 && rail_y < 128)){
+            satchel_in_air = false;
+            game_over = 0;
         }
 
         else{
@@ -484,7 +499,7 @@ void PhysicsEngineTask(void* p_arg) {
                 rail_vel = sqrt((2*rail_energy)/(game.railgun.shot_mass_kg));
                 rail_x = plat_x - 8;
                 rail_y = 118;
-                rail_x_vel = cos(game.railgun.elevation_angle_mrad * 0.0572957795) * rail_vel;
+                rail_x_vel = (cos(game.railgun.elevation_angle_mrad * 0.0572957795) * rail_vel) + plat_x_vel;
                 rail_y_init_vel = -sin(game.railgun.elevation_angle_mrad * 0.0572957795) * rail_vel;
                 rail_y_vel = rail_y_init_vel;  // initialize rail_y_vel with rail_y_init_vel
 
@@ -495,7 +510,7 @@ void PhysicsEngineTask(void* p_arg) {
                 rail_vel = sqrt((2*rail_energy)/(game.railgun.shot_mass_kg));
                 rail_x = plat_x - 8;
                 rail_y = 118;
-                rail_x_vel = cos(game.railgun.elevation_angle_mrad * 0.0572957795) * rail_vel;
+                rail_x_vel = (cos(game.railgun.elevation_angle_mrad * 0.0572957795) * rail_vel) + plat_x_vel;
                 rail_y_init_vel = -sin(game.railgun.elevation_angle_mrad * 0.0572957795) * rail_vel;
                 rail_y_vel = rail_y_init_vel;  // initialize rail_y_vel with rail_y_init_vel
 
@@ -521,8 +536,7 @@ void PhysicsEngineTask(void* p_arg) {
             }
         }
 
-
-        rail_x += rail_x_vel * tau_physics;
+        rail_x += (rail_x_vel * tau_physics);
         rail_y_vel += (rail_y_acc * tau_physics);  // update rail_y_vel with gravity
         rail_y += rail_y_vel * tau_physics;  // use updated rail_y_vel in position update
         // Calculate x velocity and position for platform
@@ -567,6 +581,16 @@ void LCD_TimerCallback(void *p_tmr, void *p_arg){
 
   OSSemPost(&LCDSem, OS_OPT_POST_1, &err);
 
+  if(foundation_hit_count >= game.foundation_hits_required){
+      if(evacuation > 8){
+          GPIO_PinOutSet(LED1_port, LED1_pin);
+      }
+      else{
+          GPIO_PinOutToggle(LED1_port, LED1_pin);
+          evacuation++;
+      }
+  }
+
   if(err.Code != RTOS_ERR_NONE){
 
   }
@@ -593,16 +617,16 @@ void Evac_On_TimerCallback(void *p_tmr, void *p_arg){
   (void)&p_tmr;
   (void)&p_arg;
 
-  GPIO_PinOutToggle(LED1_port, LED1_pin);
+  GPIO_PinOutSet(LED1_port, LED1_pin);
 
   OSTmrCreate(&EvacTimerOff,
-              "Evacuation Timer Off",
-              0,
-              2,
-              OS_OPT_TMR_ONE_SHOT,
-              &Evac_Off_TimerCallback,
-              DEF_NULL,
-              &err);
+                "Evacuation Timer Off",
+                0,
+                5,
+                OS_OPT_TMR_ONE_SHOT,
+                &Evac_Off_TimerCallback,
+                DEF_NULL,
+                &err);
 
   OSTmrStart(&EvacTimerOff, &err);
 
@@ -685,16 +709,6 @@ void init_timers(void){
               DEF_NULL,
               &err);
 
-  OSTmrCreate(&EvacTimerOn,
-              "Evacuation Timer On",
-              0,
-              2,
-              OS_OPT_TMR_PERIODIC,
-              &Evac_On_TimerCallback,
-              DEF_NULL,
-              &err);
-
-  //OSTmrStart(&EvacTimerOn, &err);
 
   if(err.Code != RTOS_ERR_NONE){
 
@@ -713,6 +727,15 @@ void init_timers(void){
 
   }
 
+  OSTmrCreate(&EvacTimerOn,
+              "Evacuation Timer On",
+              0,
+              game.tau_physics_ms/10,
+              OS_OPT_TMR_PERIODIC,
+              &Physics_TimerCallback,
+              DEF_NULL,
+              &err);
+
   OSTmrCreate(&SliderTimer,
               "Slider Timer",
               0,
@@ -726,13 +749,12 @@ void init_timers(void){
 
   }
 
+
   OSTmrStart(&PhysicsTimer, &err);
 
   OSTmrStart(&LCDTimer, &err);
 
   OSTmrStart(&SliderTimer, &err);
-
-  OSTmrStart(&EvacTimerOn, &err);
 
   if(err.Code != RTOS_ERR_NONE){
 
